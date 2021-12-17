@@ -47,15 +47,15 @@ def refine_flow(flow, mag, ksize):
     flow_padded = np.pad(flow, ((0, 0), (p, p), (p, p)))
 
     # get neighbors of each tangent vector
-    neighbors = find_neighbors(flow_padded, ksize,
+    flow_neighbors = find_neighbors(flow_padded, ksize,
             s=1, out_h=h, out_w=w)
     
     # retrive centural tangent vector in each window
-    me = neighbors[:, ksize // 2, ksize // 2, :, :]\
-            [:, None, None, :, :]
+    flow_me = flow_neighbors[:, ksize // 2, ksize // 2, :, :]
+    flow_me = np.expand_dims(flow_me, axis=(1, 2))
 
     # compute dot
-    dots = np.sum(neighbors * me, axis=0, keepdims=True)
+    dots = np.sum(flow_neighbors * flow_me, axis=0, keepdims=True)
     
     # compute phi
     phi = np.where(dots > 0, 1, -1)
@@ -67,10 +67,10 @@ def refine_flow(flow, mag, ksize):
     mag_padded = np.pad(mag, ((0, 0), (p, p), (p, p)))
     mag_neighbors = find_neighbors(mag_padded, ksize,
             s=1, out_h=h, out_w=w)
-    mag_me = mag_neighbors[:, ksize // 2, ksize // 2, :, :]\
-            [:, None, None, :, :]
+    mag_me = mag_neighbors[:, ksize // 2, ksize // 2, :, :]
+    mag_me = np.expand_dims(mag_me, axis=(1, 2))
     wm = (1 + np.tanh(mag_neighbors - mag_me)) / 2
-    
+
     # compute ws
     ws = np.ones_like(wm)
     x, y = np.meshgrid(np.arange(ksize), np.arange(ksize))
@@ -79,7 +79,7 @@ def refine_flow(flow, mag, ksize):
     ws[dist >= ksize // 2, :, :] = 0
 
     # update flow
-    flow = np.sum(phi * neighbors * ws * wm * wd, axis=(1, 2))
+    flow = np.sum(phi * flow_neighbors * ws * wm * wd, axis=(1, 2))
 
     # normalize flow
     norm = np.sqrt(np.sum(flow ** 2, axis=0))
@@ -109,7 +109,7 @@ def create_filters(p, q):
     return gauss_f.astype('float32'), log_f.astype('float32')
 
 
-def detect_edge(img, flow, grad, p, q):
+def detect_edge(img, flow, p, q):
     h, w = img.shape
 
     # generate filter
@@ -123,6 +123,10 @@ def detect_edge(img, flow, grad, p, q):
 
     steps = np.arange(-q, q + 1).reshape(-1, 1, 1, 1)
     steps = np.repeat(steps, repeats=2, axis=1)
+
+    grad = np.empty_like(flow)
+    grad[0, :, :] = flow[1, :, :]
+    grad[1, :, :] = -flow[0, :, :]
 
     xy = start + (steps * grad)
     ixy = np.ceil(xy).astype('int32')
@@ -183,8 +187,8 @@ def run(img):
     # img = cv.bilateralFilter(img, 15, 15, 10)
     img = img.astype('float32')
 
-    grad_x = cv.Sobel(img, cv.CV_32F, 1, 0, ksize=5)
-    grad_y = cv.Sobel(img, cv.CV_32F, 0, 1, ksize=5)
+    grad_x = cv.Sobel(img, cv.CV_32F, 1, 0, ksize=3)
+    grad_y = cv.Sobel(img, cv.CV_32F, 0, 1, ksize=3)
     mag = np.sqrt(grad_x ** 2 + grad_y ** 2)
 
     # normalize gradient and get tangent
@@ -196,13 +200,10 @@ def run(img):
     mag = cv.normalize(mag, dst=None, norm_type=cv.NORM_MINMAX)
 
     # expand dimension in axis=0 for vectorizing
-    grad_x = np.expand_dims(grad_x, axis=0)
-    grad_y = np.expand_dims(grad_y, axis=0)
-    mag = np.expand_dims(mag, axis=0)
-    flow_x, flow_y = -grad_y, grad_x
-
-    grad = np.concatenate((grad_x, grad_y), axis=0)
+    flow_x = np.expand_dims(-grad_y, axis=0)
+    flow_y = np.expand_dims(grad_x, axis=0)
     flow = np.concatenate((flow_x, flow_y), axis=0)
+    mag = np.expand_dims(mag, axis=0)
 
     for i in range(2):
         start = time.perf_counter()
@@ -213,14 +214,14 @@ def run(img):
 
     for i in range(3):
         start = time.perf_counter()
-        edge = detect_edge(img, flow, grad, p=13, q=5)
+        edge = detect_edge(img, flow, p=13, q=5)
         img += edge
         img = np.clip(img, 0, 255)
         end = time.perf_counter()
         print(f"applying fdog, iteration {i + 1}, "
                 f"time cost = {round(end - start, 6)}s")
 
-    return detect_edge(img, flow, grad, p=13, q=5)
+    return detect_edge(img, flow, p=13, q=5)
 
 
 if __name__ == "__main__":
