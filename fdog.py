@@ -185,7 +185,7 @@ def detect_edge(img, flow, p, q):
 
 def run(img):
     img = cv.cvtColor(img, cv.COLOR_RGB2GRAY)
-    # img = cv.bilateralFilter(img, 15, 15, 10)
+    img = cv.bilateralFilter(img, 15, 15, 10)
     img = img.astype('float32')
 
     grad_x = cv.Sobel(img, cv.CV_32F, 1, 0, ksize=3)
