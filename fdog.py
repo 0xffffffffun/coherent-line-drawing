@@ -26,14 +26,14 @@ def cv_imshow(img, title='[TEST]', wait=0.5, move=None):
 
 def find_neighbors(x, ksize, s, out_h, out_w):
     in_c, in_h, in_w = x.shape
-    shape = (in_c, ksize, ksize, out_h, out_w)
+    shape = (out_h, out_w, in_c, ksize, ksize)
     itemsize = x.itemsize
     strides = (
+        s    * in_w * itemsize,
+        s    * itemsize,
         in_w * in_h * itemsize,
         in_w * itemsize,
-        itemsize,
-        s    * in_w * itemsize,
-        s    * itemsize
+        itemsize
     )
     return np.lib.stride_tricks.as_strided(x, shape=shape,
         strides=strides)
@@ -49,14 +49,14 @@ def refine_flow(flow, mag, ksize):
     # get neighbors of each tangent vector
     flow_neighbors = find_neighbors(flow_padded, ksize,
             s=1, out_h=h, out_w=w)
-    
+
     # retrive centural tangent vector in each window
-    flow_me = flow_neighbors[:, ksize // 2, ksize // 2, :, :]
-    flow_me = np.expand_dims(flow_me, axis=(1, 2))
+    flow_me = flow_neighbors[:, :, :, ksize // 2, ksize // 2]
+    flow_me = np.expand_dims(flow_me, axis=(3, 4))
 
     # compute dot
-    dots = np.sum(flow_neighbors * flow_me, axis=0, keepdims=True)
-    
+    dots = np.sum(flow_neighbors * flow_me, axis=2, keepdims=True)
+
     # compute phi
     phi = np.where(dots > 0, 1, -1)
     
@@ -67,8 +67,8 @@ def refine_flow(flow, mag, ksize):
     mag_padded = np.pad(mag, ((0, 0), (p, p), (p, p)))
     mag_neighbors = find_neighbors(mag_padded, ksize,
             s=1, out_h=h, out_w=w)
-    mag_me = mag_neighbors[:, ksize // 2, ksize // 2, :, :]
-    mag_me = np.expand_dims(mag_me, axis=(1, 2))
+    mag_me = mag_neighbors[:, :, :, ksize // 2, ksize // 2]
+    mag_me = np.expand_dims(mag_me, axis=(3, 4))
     wm = (1 + np.tanh(mag_neighbors - mag_me)) / 2
 
     # compute ws
@@ -76,10 +76,11 @@ def refine_flow(flow, mag, ksize):
     x, y = np.meshgrid(np.arange(ksize), np.arange(ksize))
     cx, cy = ksize // 2, ksize // 2
     dist = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)[None, :, :]
-    ws[dist >= ksize // 2, :, :] = 0
+    ws[:, :, dist >= ksize // 2] = 0
 
     # update flow
-    flow = np.sum(phi * flow_neighbors * ws * wm * wd, axis=(1, 2))
+    flow = np.sum(phi * flow_neighbors * ws * wm * wd, axis=(3, 4))
+    flow = np.transpose(flow, axes=(2, 0, 1))
 
     # normalize flow
     norm = np.sqrt(np.sum(flow ** 2, axis=0))
@@ -115,7 +116,7 @@ def detect_edge(img, flow, p, q):
     # generate filter
     gauss_f, log_f = create_filters(p, q)
  
-    # create base coords
+    # create start coords
     sx, sy = np.meshgrid(np.arange(w), np.arange(h))
     sx = np.expand_dims(sx, axis=0)
     sy = np.expand_dims(sy, axis=0)
