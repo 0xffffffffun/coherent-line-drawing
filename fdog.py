@@ -9,8 +9,6 @@ import os
 using numpy and opencv, all operations are vectorized. Performance
 is faster than any other re-implementation of Python in github but
 slower than re-implementation of C++.
-    The result seems different from paper's result, but I think
-most of my implementation are correct.
 
     Author: linxinqi@tju.edu.cn
     Date:   2021-12-18 03:55
@@ -61,7 +59,7 @@ def refine_flow(flow, mag, ksize):
     phi = np.where(dots > 0, 1, -1)
     
     # compute wd
-    wd = np.abs(dots)
+    # wd = np.abs(dots)
     
     # compute wm
     mag_padded = np.pad(mag, ((0, 0), (p, p), (p, p)))
@@ -69,17 +67,19 @@ def refine_flow(flow, mag, ksize):
             s=1, out_h=h, out_w=w)
     mag_me = mag_neighbors[:, :, :, ksize // 2, ksize // 2]
     mag_me = np.expand_dims(mag_me, axis=(3, 4))
-    wm = (1 + np.tanh(mag_neighbors - mag_me)) / 2
+    # wm = (1 + np.tanh(mag_neighbors - mag_me)) / 2
+    wm = 1 + mag_neighbors - mag_me
 
     # compute ws
-    ws = np.ones_like(wm)
-    x, y = np.meshgrid(np.arange(ksize), np.arange(ksize))
-    cx, cy = ksize // 2, ksize // 2
-    dist = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)[None, :, :]
-    ws[:, :, dist >= ksize // 2] = 0
+    # ws = np.ones_like(wm)
+    # x, y = np.meshgrid(np.arange(ksize), np.arange(ksize))
+    # cx, cy = ksize // 2, ksize // 2
+    # dist = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)[None, :, :]
+    # ws[:, :, dist >= ksize // 2] = 0
 
     # update flow
-    flow = np.sum(phi * flow_neighbors * ws * wm * wd, axis=(3, 4))
+    # flow = np.sum(phi * flow_neighbors * ws * wm * wd, axis=(3, 4))
+    flow = np.sum(phi * flow_neighbors * wm, axis=(3, 4))
     flow = np.transpose(flow, axes=(2, 0, 1))
 
     # normalize flow
@@ -130,7 +130,7 @@ def detect_edge(img, flow, p, q):
     grad[1, :, :] = -flow[0, :, :]
 
     xy = start + (steps * grad)
-    ixy = np.ceil(xy).astype('int32')
+    ixy = np.round(xy).astype('int32')
     ix, iy = np.split(ixy, indices_or_sections=2, axis=1)
     ix = ix.reshape(2 * q + 1, h, w)
     iy = iy.reshape(2 * q + 1, h, w)
@@ -155,8 +155,8 @@ def detect_edge(img, flow, p, q):
     x = sx.astype('float32')
     y = sy.astype('float32')
     for i in range(p):
-        ix, iy = np.ceil(x).astype('int32'), \
-            np.ceil(y).astype('int32')
+        ix, iy = np.round(x).astype('int32'), \
+            np.round(y).astype('int32')
         neighbor = img_padded[iy, ix]
         # add weight
         H += (neighbor * gauss_f[p + i])
@@ -167,8 +167,8 @@ def detect_edge(img, flow, p, q):
     x = sx.astype('float32')
     y = sy.astype('float32')
     for i in range(1, p):
-        ix, iy = np.ceil(x).astype('int32'), \
-            np.ceil(y).astype('int32')
+        ix, iy = np.round(x).astype('int32'), \
+            np.round(y).astype('int32')
         neighbor = img_padded[iy, ix]
         # add weight
         H += (neighbor * gauss_f[p - i])
@@ -208,7 +208,7 @@ def run(img):
 
     for i in range(2):
         start = time.perf_counter()
-        flow = refine_flow(flow, mag, ksize=7)
+        flow = refine_flow(flow, mag, ksize=9)
         end = time.perf_counter()
         print(f"smoothing edge tangent flow, iteration {i + 1}, "
                 f"time cost = {round(end - start, 6)}s")
@@ -228,23 +228,23 @@ def run(img):
 if __name__ == "__main__":
     tests = [
         'test1.jpg', 'test2.jpg', 'test3.jpg',
-        'eagle.jpg', 'butterfly.jpg', 'star.jpg',
-        'girl.jpg'
+        'eagle.jpg', 'butterfly.jpg', 'lighthouse.png',
+        'star.jpg', 'girl.jpg'
     ]
 
     for test in tests:
         print(f"running on test {test}")
         img = cv.imread(os.path.join('images', test))
-
+        # img = cv.resize(img, dsize=(100, 100))
         size = np.array(img.shape[:-1])
         if (size > 500).any():
             img = cv.resize(img,
                 tuple((size * 0.5).astype('int').tolist()[::-1]))
-
         edge = run(img)
         print("{}-{}".format('- ' * 10, ' -' * 9))
 
         cv_imshow(img, title="input", wait=0.1)
-        cv_imshow(edge, title="output", wait=0,
+        cv_imshow(edge.astype('uint8'), title="output", wait=0,
             move=(int(img.shape[1] * 1.5), 0))
+        cv.imwrite(f"edge_{test}", edge)
         cv.destroyAllWindows()
