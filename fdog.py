@@ -56,8 +56,8 @@ def refine_flow(flow, mag, ksize):
     flow_me = np.expand_dims(flow_me, axis=(3, 4))
 
     # compute dot
-    dots = np.sum(flow_neighbors * flow_me,
-        axis=2, keepdims=True)
+    dots = np.sum(flow_neighbors * flow_me, axis=2,
+        keepdims=True)
 
     # compute phi
     phi = np.where(dots > 0, 1, -1)
@@ -92,6 +92,21 @@ def refine_flow(flow, mag, ksize):
     return flow
 
 
+def guass(x, sigma):
+    return np.exp(-(x ** 2) / (2 * sigma ** 2)) / \
+        (np.sqrt(2 * np.pi) * sigma)
+
+
+def make_gauss_filter(sigma, threshold=0.001):
+    """ returns a symetric gauss 1-d filter """
+    i = 0
+    while guass(i, sigma) >= threshold:
+        i = i + 1
+
+    return guass(np.arange(-i, i + 1),
+        sigma).astype('float32')
+
+
 def create_filters(gauss_size, sigma_m,
     dog_size, sigma_c, rho):
     sigma_s = 1.6 * sigma_c
@@ -113,22 +128,32 @@ def create_filters(gauss_size, sigma_m,
 def detect_edge(img, flow, gauss_size, sigma_m,
     dog_size, sigma_c, rho, tau):
     h, w = img.shape
+    # normalize input image
+    img = img / 255.0
 
     # gaussian filter and log filter
-    gauss_f, dog_f = create_filters(gauss_size, sigma_m,
-                    dog_size, sigma_c, rho)
-    
+    # gauss_f, dog_f = create_filters(gauss_size, sigma_m,
+    #                 dog_size, sigma_c, rho)
+    gauss_c = make_gauss_filter(sigma_c)
+    gauss_s = make_gauss_filter(sigma_c * 1.6)
+
+    # resize filter
+    cwidth, swidth = len(gauss_c) // 2, len(gauss_s) // 2
+    dog_width = min(cwidth, swidth)
+    gauss_c = gauss_c[-dog_width + cwidth: dog_width + 1 + cwidth]
+    gauss_s = gauss_s[-dog_width + swidth: dog_width + 1 + swidth]
+
     # do padding
     img_padded = np.pad(img,
-        ((dog_size, dog_size), (dog_size, dog_size)))
-    
-    # start coords of each pixel (shifted by q)
+        ((dog_width, dog_width), (dog_width, dog_width)))
+
+    # start coords of each pixel (shifted by dog_width)
     sx, sy = np.meshgrid(np.arange(w), np.arange(h))
     sx = np.expand_dims(sx, axis=0)
     sy = np.expand_dims(sy, axis=0)
-    start = np.concatenate((sx, sy), axis=0) + dog_size
+    start = np.concatenate((sx, sy), axis=0) + dog_width
 
-    steps = np.arange(-dog_size, dog_size + 1).reshape(-1, 1, 1, 1)
+    steps = np.arange(-dog_width, dog_width + 1).reshape(-1, 1, 1, 1)
     steps = np.repeat(steps, repeats=2, axis=1)
 
     grad = np.empty_like(flow)
@@ -139,26 +164,40 @@ def detect_edge(img, flow, gauss_size, sigma_m,
     xy = start + (steps * grad)
     ixy = np.round(xy).astype('int32')
     ix, iy = np.split(ixy, indices_or_sections=2, axis=1)
-    ix = ix.reshape(2 * dog_size + 1, h, w)
-    iy = iy.reshape(2 * dog_size + 1, h, w)
+    ix = ix.reshape(2 * dog_width + 1, h, w)
+    iy = iy.reshape(2 * dog_width + 1, h, w)
 
     # neighbors of each pixel along the gradient
     neighbors = img_padded[iy, ix]
 
     # apply dog filter in gradient's direction
-    dog_f = dog_f.reshape(2 * dog_size + 1, 1, 1)
-    img = np.sum(dog_f * neighbors, axis=0)
+    gauss_c = gauss_c.reshape(2 * dog_width + 1, 1, 1)
+    img_gauss_c = np.sum(gauss_c * neighbors, axis=0) \
+                / np.sum(gauss_c)
 
-    img_padded = np.pad(img,
-        ((gauss_size, gauss_size), (gauss_size, gauss_size)))
+    gauss_s = gauss_s.reshape(2 * dog_width + 1, 1, 1)
+    img_gauss_s = np.sum(gauss_s * neighbors, axis=0) \
+                / np.sum(gauss_s)
+    dog = img_gauss_c - rho * img_gauss_s
+
+    zero_grad_mask = np.logical_and(
+                    grad[0, ...] == 0, grad[1, ...] == 0)
+    dog[zero_grad_mask] = 0
+
+    gauss_m = make_gauss_filter(sigma_m)
+    gauss_width = len(gauss_m) // 2
+
+    dog_padded = np.pad(dog,
+        ((gauss_width, gauss_width), (gauss_width, gauss_width)))
     flow_padded = np.pad(flow, ((0, 0),
-        (gauss_size, gauss_size), (gauss_size, gauss_size)))
+        (gauss_width, gauss_width), (gauss_width, gauss_width)))
 
-    H = np.zeros_like(img)
+    fdog = np.zeros_like(dog)
 
+    # TODO: 
     # smooth neighbors alone tangent
     sx, sy = np.meshgrid(np.arange(w), np.arange(h))
-    sx += gauss_size; sy += gauss_size
+    sx += gauss_size; sy += gauss_width
 
     x = sx.astype('float32')
     y = sy.astype('float32')
@@ -188,6 +227,38 @@ def detect_edge(img, flow, gauss_size, sigma_m,
     mask = np.logical_and(H < 0, (1 + np.tanh(H)) < tau)
     edge = np.where(mask, 0, 255).astype('float32')
     return edge
+
+
+def initialze_flow(img, sobel_size):
+    img = cv.normalize(img, dst=None, alpha=0.0, beta=1.0,
+        norm_type=cv.NORM_MINMAX, dtype=cv.CV_32FC1)
+
+    grad_x = cv.Sobel(img, cv.CV_32FC1, 1, 0,
+            ksize=sobel_size)
+    grad_y = cv.Sobel(img, cv.CV_32FC1, 0, 1,
+            ksize=sobel_size)
+    # <=> mag = cv.magnitude(grad_x, grad_y)
+    mag = np.sqrt(grad_x ** 2 + grad_y ** 2)
+
+    # normalize gradient and get tangent vector
+    none_zero_mask = mag != 0
+    grad_x[none_zero_mask] /= mag[none_zero_mask]
+    grad_y[none_zero_mask] /= mag[none_zero_mask]
+
+    # normalize magnitude
+    mag = cv.normalize(mag, dst=None, alpha=0.0, beta=1.0,
+        norm_type=cv.NORM_MINMAX)
+
+    # rotate gradient and get tangent vector
+    flow_x, flow_y = -grad_y, grad_x
+
+    # expand dimension in axis=0 for vectorizing
+    flow_x = np.expand_dims(flow_x, axis=0)
+    flow_y = np.expand_dims(flow_y, axis=0)
+    flow = np.concatenate((flow_x, flow_y), axis=0)
+    mag = np.expand_dims(mag, axis=0)
+
+    return flow, mag
 
 
 def run(img, sobel_size=3, etf_iter=2, etf_size=9,
@@ -242,36 +313,11 @@ def run(img, sobel_size=3, etf_iter=2, etf_size=9,
         edge map of input image, data type is float32 and pixel's
         range is clipped to [0, 255]
     """
-    # preprocess input image
+    # convert to gray image
     img = cv.cvtColor(img, cv.COLOR_RGB2GRAY)
-    img = cv.bilateralFilter(img, 15, 15, 10)
 
-    # conver to float32 for convenience
-    img = img.astype('float32')
-
-    grad_x = cv.Sobel(img, cv.CV_32F,
-            1, 0, ksize=sobel_size)
-    grad_y = cv.Sobel(img, cv.CV_32F,
-            0, 1, ksize=sobel_size)
-    mag = np.sqrt(grad_x ** 2 + grad_y ** 2)
-
-    # normalize gradient and get tangent vector
-    none_zero_mask = mag != 0
-    grad_x[none_zero_mask] /= mag[none_zero_mask]
-    grad_y[none_zero_mask] /= mag[none_zero_mask]
-
-    # normalize magnitude
-    mag = cv.normalize(mag, dst=None,
-        norm_type=cv.NORM_MINMAX)
-
-    # rotate gradient and get tangent vector
-    flow_x, flow_y = -grad_y, grad_x
-
-    # expand dimension in axis=0 for vectorizing
-    flow_x = np.expand_dims(flow_x, axis=0)
-    flow_y = np.expand_dims(flow_y, axis=0)
-    flow = np.concatenate((flow_x, flow_y), axis=0)
-    mag = np.expand_dims(mag, axis=0)
+    # initialize edge tangent flow
+    flow, mag = initialze_flow(img, sobel_size)
 
     # refine edge tangent flow
     for i in range(etf_iter):
@@ -300,9 +346,10 @@ def run(img, sobel_size=3, etf_iter=2, etf_size=9,
 
 if __name__ == "__main__":
     tests = [
-        'test1.jpg', 'test2.jpg', 'test3.jpg',
-        'eagle.jpg', 'butterfly.jpg', 'lighthouse.png',
-        'star.jpg', 'girl.jpg'
+        # 'test1.jpg', 'test2.jpg', 'test3.jpg',
+        # 'eagle.jpg', 'butterfly.jpg', 'lighthouse.png',
+        'eagle.jpg'
+        # 'star.jpg', 'girl.jpg'
     ]
 
     for test in tests:
