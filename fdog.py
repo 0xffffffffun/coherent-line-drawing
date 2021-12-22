@@ -64,7 +64,7 @@ def refine_flow(flow, mag, ksize):
 
     # compute wd
     wd = np.abs(dots)
-    
+
     # compute wm
     mag_padded = np.pad(mag, ((0, 0), (p, p), (p, p)))
     mag_neighbors = find_neighbors(mag_padded, ksize,
@@ -144,7 +144,7 @@ def detect_edge(img, flow, gauss_size, sigma_m,
     gauss_s = gauss_s[-dog_width + swidth: dog_width + 1 + swidth]
 
     # do padding
-    img_padded = np.pad(img,
+    img = np.pad(img,
         ((dog_width, dog_width), (dog_width, dog_width)))
 
     # start coords of each pixel (shifted by dog_width)
@@ -168,7 +168,7 @@ def detect_edge(img, flow, gauss_size, sigma_m,
     iy = iy.reshape(2 * dog_width + 1, h, w)
 
     # neighbors of each pixel along the gradient
-    neighbors = img_padded[iy, ix]
+    neighbors = img[iy, ix]
 
     # apply dog filter in gradient's direction
     gauss_c = gauss_c.reshape(2 * dog_width + 1, 1, 1)
@@ -178,54 +178,88 @@ def detect_edge(img, flow, gauss_size, sigma_m,
     gauss_s = gauss_s.reshape(2 * dog_width + 1, 1, 1)
     img_gauss_s = np.sum(gauss_s * neighbors, axis=0) \
                 / np.sum(gauss_s)
-    dog = img_gauss_c - rho * img_gauss_s
+    img_dog = img_gauss_c - rho * img_gauss_s
 
     zero_grad_mask = np.logical_and(
                     grad[0, ...] == 0, grad[1, ...] == 0)
-    dog[zero_grad_mask] = 0
+    img_dog[zero_grad_mask] = 0
 
     gauss_m = make_gauss_filter(sigma_m)
     gauss_width = len(gauss_m) // 2
+    
+    # initialize with a negative weight for coding's convenience
+    img_fdog = -gauss_m[gauss_width] * img_dog
+    weight_acc = np.full_like(img_dog, fill_value=-gauss_m[gauss_width])
 
-    dog_padded = np.pad(dog,
+    img_dog = np.pad(img_dog,
         ((gauss_width, gauss_width), (gauss_width, gauss_width)))
-    flow_padded = np.pad(flow, ((0, 0),
+    zero_grad_mask = np.pad(zero_grad_mask,
+        ((gauss_width, gauss_width), (gauss_width, gauss_width)))
+    flow = np.pad(flow, ((0, 0),
         (gauss_width, gauss_width), (gauss_width, gauss_width)))
 
-    fdog = np.zeros_like(dog)
-
-    # TODO: 
     # smooth neighbors alone tangent
     sx, sy = np.meshgrid(np.arange(w), np.arange(h))
-    sx += gauss_size; sy += gauss_width
+    sx += gauss_width; sy += gauss_width
+
+    forward_mask = np.full(shape=(h, w), fill_value=True,
+                dtype='bool')
 
     x = sx.astype('float32')
     y = sy.astype('float32')
-    for i in range(gauss_size):
+    for i in range(gauss_width + 1):
         ix, iy = np.round(x).astype('int32'), \
             np.round(y).astype('int32')
-        neighbor = img_padded[iy, ix]
-        # multiply weight
-        H += (neighbor * gauss_f[gauss_size + i])
-        # take a step
-        x += flow_padded[0, iy, ix]
-        y += flow_padded[1, iy, ix]
 
+        none_zero_mask = np.logical_not(zero_grad_mask[iy, ix])
+        forward_mask = np.logical_and(forward_mask, none_zero_mask)
+
+        neighbor = img_dog[iy, ix]
+
+        # multiply weight
+        weight = gauss_m[gauss_width + i]
+        img_fdog[forward_mask] += (neighbor * weight)[forward_mask]
+        weight_acc[forward_mask] += weight
+
+        # take a step
+        x += flow[0, iy, ix]
+        y += flow[1, iy, ix]
+
+
+    forward_mask = np.full(shape=(h, w), fill_value=True,
+                dtype='bool')
     x = sx.astype('float32')
     y = sy.astype('float32')
-    for i in range(1, gauss_size):
+    for i in range(gauss_width + 1):
         ix, iy = np.round(x).astype('int32'), \
             np.round(y).astype('int32')
-        neighbor = img_padded[iy, ix]
+
+        none_zero_mask = np.logical_not(zero_grad_mask[iy, ix])
+        forward_mask = np.logical_and(forward_mask, none_zero_mask)
+
+        neighbor = img_dog[iy, ix]
+
         # multiply weight
-        H += (neighbor * gauss_f[gauss_size - i])
+        weight = gauss_m[gauss_width - i]
+        img_fdog[forward_mask] += (neighbor * weight)[forward_mask]
+        weight_acc[forward_mask] += weight
+
         # take a step
-        x -= flow_padded[0, iy, ix]
-        y -= flow_padded[1, iy, ix]
+        x -= flow[0, iy, ix]
+        y -= flow[1, iy, ix]
+    
+    # postprocess
+    img_fdog /= weight_acc
+    img_fdog[img_fdog > 0] = 1
+    img_fdog[img_fdog <= 0] = 1 + np.tanh(img_fdog[img_fdog <= 0])
+    img_fdog = (img_fdog - np.min(img_fdog)) / \
+               (np.max(img_fdog) - np.min(img_fdog))
 
     # binarize
-    mask = np.logical_and(H < 0, (1 + np.tanh(H)) < tau)
-    edge = np.where(mask, 0, 255).astype('float32')
+    # mask = np.logical_and(img_fdog < 0, (1 + np.tanh(img_fdog)) < tau)
+    img_fdog[img_fdog < tau] = 0
+    img_fdog[img_fdog >= tau] = 255
+    edge = img_fdog.astype('uint8')
     return edge
 
 
@@ -333,8 +367,8 @@ def run(img, sobel_size=3, etf_iter=2, etf_size=9,
         edge = detect_edge(img, flow,
             gauss_size=gauss_size, sigma_m=sigma_m,
             dog_size=dog_size, sigma_c=sigma_c, rho=rho, tau=tau)
-        img += edge
-        img = np.clip(img, 0, 255)
+        img[edge == 0] = 0
+        img = cv.GaussianBlur(img, ksize=(3, 3), sigmaX=0)
         end = time.perf_counter()
         print(f"applying fdog, iteration {i + 1}, "
                 f"time cost = {end - start:<6f}s")
@@ -345,11 +379,24 @@ def run(img, sobel_size=3, etf_iter=2, etf_size=9,
 
 
 if __name__ == "__main__":
+    # test2.jpg is noisy and need specific configuration:
+    # img=img
+    # sobel_size=5
+    # etf_iter=2
+    # etf_size=7
+    # fdog_iter=5
+    # gauss_size=13
+    # sigma_m=3.0
+    # dog_size=7
+    # sigma_c=1.0
+    # rho=0.98
+    # tau=0.803
+
     tests = [
-        # 'test1.jpg', 'test2.jpg', 'test3.jpg',
-        # 'eagle.jpg', 'butterfly.jpg', 'lighthouse.png',
-        'eagle.jpg'
-        # 'star.jpg', 'girl.jpg'
+        # 'test2.jpg'
+        'test1.jpg', 'test3.jpg',
+        'eagle.jpg', 'butterfly.jpg', 'lighthouse.png',
+        'star.jpg', 'girl.jpg'
     ]
 
     for test in tests:
@@ -367,22 +414,22 @@ if __name__ == "__main__":
         # run on this image and return edge map
         edge = run(
             img=img,
-            sobel_size=3,
+            sobel_size=5,
             etf_iter=2,
-            etf_size=9,
-            fdog_iter=3,
+            etf_size=7,
+            fdog_iter=2,
             gauss_size=13,
             sigma_m=3.0,
-            dog_size=5,
+            dog_size=7,
             sigma_c=1.0,
             rho=0.99,
-            tau=0.2
+            tau=0.907
         )
         print("{}-{}".format('- ' * 10, ' -' * 9))
 
         # show origin image and edge map
         cv_imshow(img, title="input", wait=0.1)
-        cv_imshow(edge.astype('uint8'), title="output", wait=0.5,
+        cv_imshow(edge.astype('uint8'), title="output", wait=0,
             move=(int(img.shape[1] * 1.5), 0))
 
         # save result
