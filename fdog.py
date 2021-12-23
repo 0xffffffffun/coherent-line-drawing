@@ -182,7 +182,7 @@ def detect_edge(img, flow, gauss_size, sigma_m,
 
     zero_grad_mask = np.logical_and(
                     grad[0, ...] == 0, grad[1, ...] == 0)
-    img_dog[zero_grad_mask] = 0
+    img_dog[zero_grad_mask] = np.max(img_dog)
 
     gauss_m = make_gauss_filter(sigma_m)
     gauss_width = len(gauss_m) // 2
@@ -207,13 +207,9 @@ def detect_edge(img, flow, gauss_size, sigma_m,
 
     x = sx.astype('float32')
     y = sy.astype('float32')
-    for i in range(gauss_width + 1):
-        ix, iy = np.round(x).astype('int32'), \
+    ix, iy = np.round(x).astype('int32'), \
             np.round(y).astype('int32')
-
-        none_zero_mask = np.logical_not(zero_grad_mask[iy, ix])
-        forward_mask = np.logical_and(forward_mask, none_zero_mask)
-
+    for i in range(gauss_width + 1):
         neighbor = img_dog[iy, ix]
 
         # multiply weight
@@ -225,18 +221,20 @@ def detect_edge(img, flow, gauss_size, sigma_m,
         x += flow[0, iy, ix]
         y += flow[1, iy, ix]
 
-
-    forward_mask = np.full(shape=(h, w), fill_value=True,
-                dtype='bool')
-    x = sx.astype('float32')
-    y = sy.astype('float32')
-    for i in range(gauss_width + 1):
         ix, iy = np.round(x).astype('int32'), \
             np.round(y).astype('int32')
 
         none_zero_mask = np.logical_not(zero_grad_mask[iy, ix])
         forward_mask = np.logical_and(forward_mask, none_zero_mask)
 
+
+    forward_mask = np.full(shape=(h, w), fill_value=True,
+                dtype='bool')
+    x = sx.astype('float32')
+    y = sy.astype('float32')
+    ix, iy = np.round(x).astype('int32'), \
+            np.round(y).astype('int32')
+    for i in range(gauss_width + 1):
         neighbor = img_dog[iy, ix]
 
         # multiply weight
@@ -247,7 +245,13 @@ def detect_edge(img, flow, gauss_size, sigma_m,
         # take a step
         x -= flow[0, iy, ix]
         y -= flow[1, iy, ix]
-    
+
+        ix, iy = np.round(x).astype('int32'), \
+            np.round(y).astype('int32')
+
+        none_zero_mask = np.logical_not(zero_grad_mask[iy, ix])
+        forward_mask = np.logical_and(forward_mask, none_zero_mask)
+
     # postprocess
     img_fdog /= weight_acc
     img_fdog[img_fdog > 0] = 1
