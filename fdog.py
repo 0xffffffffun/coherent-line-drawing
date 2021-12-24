@@ -339,7 +339,7 @@ def run(img, sobel_size=3, etf_iter=2, etf_size=9,
         edge = detect_edge(img, flow, sigma_m=sigma_m,
             sigma_c=sigma_c, rho=rho, thresh=thresh, tau=tau)
         img[edge == 0] = 0
-        img = cv.GaussianBlur(img, ksize=(3, 3), sigmaX=0)
+        img = cv.GaussianBlur(img, ksize=(3, 3), sigmaX=0, sigmaY=0)
         end = time.perf_counter()
         print(f"applying fdog, iteration {i + 1}, "
                 f"time cost = {end - start:<6f}s")
@@ -385,12 +385,12 @@ if __name__ == "__main__":
         edge = run(
             img=img,
             sobel_size=5,
-            etf_iter=2,
+            etf_iter=4,
             etf_size=7,
             fdog_iter=2,
             sigma_m=3.0,
             sigma_c=1.0,
-            rho=0.99,
+            rho=0.997,
             tau=0.907
         )
         print("{}-{}".format('- ' * 10, ' -' * 9))
