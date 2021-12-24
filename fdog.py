@@ -45,10 +45,10 @@ def refine_flow(flow, mag, ksize):
 
     # do padding
     p = ksize // 2
-    flow_padded = np.pad(flow, ((0, 0), (p, p), (p, p)))
+    flow = np.pad(flow, ((0, 0), (p, p), (p, p)))
 
     # neighbors of each tangent vector in each window
-    flow_neighbors = find_neighbors(flow_padded, ksize,
+    flow_neighbors = find_neighbors(flow, ksize,
             s=1, out_h=h, out_w=w)
 
     # centural tangent vector in each window
@@ -81,7 +81,8 @@ def refine_flow(flow, mag, ksize):
     ws[:, :, dist >= ksize // 2] = 0
 
     # update flow
-    flow = np.sum(phi * flow_neighbors * ws * wm * wd, axis=(3, 4))
+    flow = np.sum(phi * flow_neighbors * ws * wm * wd,
+        axis=(3, 4))
     flow = np.transpose(flow, axes=(2, 0, 1))
 
     # normalize flow
@@ -93,12 +94,15 @@ def refine_flow(flow, mag, ksize):
 
 
 def guass(x, sigma):
+    """ Returns guass filter's weight with respect to
+    x and sigma. """
     return np.exp(-(x ** 2) / (2 * sigma ** 2)) / \
         (np.sqrt(2 * np.pi) * sigma)
 
 
 def make_gauss_filter(sigma, threshold=0.001):
-    """ returns a symetric gauss 1-d filter """
+    """ Returns a symetric gauss 1-d filter, max weight
+    of output filter is less than threshold."""
     i = 0
     while guass(i, sigma) >= threshold:
         i = i + 1
@@ -107,35 +111,15 @@ def make_gauss_filter(sigma, threshold=0.001):
         sigma).astype('float32')
 
 
-def create_filters(gauss_size, sigma_m,
-    dog_size, sigma_c, rho):
-    sigma_s = 1.6 * sigma_c
-
-    x = np.arange(-gauss_size, gauss_size + 1)
-    gauss_f = np.exp(-(x ** 2) / (2 * sigma_m ** 2)) / \
-        (np.sqrt(2 * np.pi) * sigma_m)
-
-    x = np.arange(-dog_size, dog_size + 1)
-    gauss_c = np.exp(-(x ** 2) / (2 * sigma_c ** 2)) / \
-        (np.sqrt(2 * np.pi) * sigma_c)
-    gauss_s = np.exp(-(x ** 2) / (2 * sigma_s ** 2)) / \
-        (np.sqrt(2 * np.pi) * sigma_s)
-    dog_f = gauss_c - rho * gauss_s
-
-    return gauss_f.astype('float32'), dog_f.astype('float32')
-
-
-def detect_edge(img, flow, gauss_size, sigma_m,
-    dog_size, sigma_c, rho, tau):
+def detect_edge(img, flow, sigma_m, sigma_c, rho,
+    thresh, tau):
     h, w = img.shape
     # normalize input image
     img = img / 255.0
 
-    # gaussian filter and log filter
-    # gauss_f, dog_f = create_filters(gauss_size, sigma_m,
-    #                 dog_size, sigma_c, rho)
-    gauss_c = make_gauss_filter(sigma_c)
-    gauss_s = make_gauss_filter(sigma_c * 1.6)
+    gauss_c = make_gauss_filter(sigma_c, threshold=thresh)
+    gauss_s = make_gauss_filter(sigma_c * 1.6,
+            threshold=thresh)
 
     # resize filter
     cwidth, swidth = len(gauss_c) // 2, len(gauss_s) // 2
@@ -300,8 +284,8 @@ def initialze_flow(img, sobel_size):
 
 
 def run(img, sobel_size=3, etf_iter=2, etf_size=9,
-    fdog_iter=3, gauss_size=13, sigma_m=3.0,
-    dog_size=5, sigma_c=1.0, rho=0.99, tau=0.2):
+    fdog_iter=3, sigma_m=3.0, sigma_c=1.0, rho=0.99,
+    thresh=0.001, tau=0.2):
     """
     Running coherent line drawing on input image.
 
@@ -309,39 +293,23 @@ def run(img, sobel_size=3, etf_iter=2, etf_size=9,
     -----------
     - img: ndarray
         input image, with shape (h, w, c)
-
     - sobel_size: int, default=3
         size of sobel filter
-
     - etf_iter: int, default=2
         iteration times of refining edge tangent flow
-    
     - etf_size: int, default=9
         size of etf filter
-
     - fdog_iter: int, default=3
         iteration times of applying fdog on input image
-
-    - gauss_size: int, default=13
-        size of 1-d gaussian filter along tangent vector,
-        if gauss_size = k, the length of gaussian filter 
-        will be 2 * k + 1
-    
     - sigma_m: float, default=3.0
         standard variance of gaussian filter
-
-    - dog_size: int, default=5
-        size of 1-d different of gaussian filter along
-        gradient, if dog_size = k, then length of dog filter
-        will be 2 * k + 1
-
     - sigma_c: float, default=1.0
         standard variance of one gaussian filter of dog filter,
         another's standard variance will be set to 1.6 * sigma_c
-
     - rho: float, default=0.99
         dog = first gaussian - rho * second gaussian
-
+    - thresh: float, default=0.001
+        TODO: 
     - tau: float, default=0.2
         threshold of edge map
 
@@ -368,18 +336,16 @@ def run(img, sobel_size=3, etf_iter=2, etf_size=9,
     # do fdog
     for i in range(fdog_iter):
         start = time.perf_counter()
-        edge = detect_edge(img, flow,
-            gauss_size=gauss_size, sigma_m=sigma_m,
-            dog_size=dog_size, sigma_c=sigma_c, rho=rho, tau=tau)
+        edge = detect_edge(img, flow, sigma_m=sigma_m,
+            sigma_c=sigma_c, rho=rho, thresh=thresh, tau=tau)
         img[edge == 0] = 0
         img = cv.GaussianBlur(img, ksize=(3, 3), sigmaX=0)
         end = time.perf_counter()
         print(f"applying fdog, iteration {i + 1}, "
                 f"time cost = {end - start:<6f}s")
 
-    return detect_edge(img, flow,
-        gauss_size=gauss_size, sigma_m=sigma_m,
-        dog_size=dog_size, sigma_c=sigma_c, rho=rho, tau=tau)
+    return detect_edge(img, flow, sigma_m=sigma_m,
+        sigma_c=sigma_c, rho=rho, thresh=thresh, tau=tau)
 
 
 if __name__ == "__main__":
@@ -422,9 +388,7 @@ if __name__ == "__main__":
             etf_iter=2,
             etf_size=7,
             fdog_iter=2,
-            gauss_size=13,
             sigma_m=3.0,
-            dog_size=7,
             sigma_c=1.0,
             rho=0.99,
             tau=0.907
