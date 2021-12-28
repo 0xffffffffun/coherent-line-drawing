@@ -23,7 +23,7 @@ def cv_imshow(img, title='[TEST]', wait=0.5, move=None):
     cv.imshow(title, img)
     if move:
         cv.moveWindow(title, *move)
-    cv.waitKey(int(wait * 1000))
+    return cv.waitKey(int(wait * 1000))
 
 
 def find_neighbors(x, ksize, s, out_h, out_w):
