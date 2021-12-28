@@ -8,13 +8,17 @@ import os
     A simple re-implementation for paper "Coherent Line Drawing" using
 numpy and opencv, all operations are vectorized (but not so well =v=).
 Performance is better than any other re-implementation of Python in github
-but slower than re-implementation of C++.
+(now!) but slower than re-implementation of C++.
 
-    Author: linxinqi@tju.edu.cn
-    Date:   2021-12-18 03:55
-    << Do whatever you want with this code >>
-
+    author:    linxinqi@tju.edu.cn or 2404390618@qq.com
+    date:      2021-12-18 03:55
     reference: https://github.com/SSARCandy/Coherent-Line-Drawing
+    usage:     - - - - - - - - - - - - - - - - - -
+               >>> pip install -r requirements.txt
+               >>> python3 fdog.py
+               >>> space, space and space ...
+               - - - - - - - - - - - - - - - - - -
+    license:   do whatever you want with this code.
 """
 
 
