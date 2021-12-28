@@ -46,6 +46,7 @@ def refine_flow(flow, mag, ksize):
     # do padding
     p = ksize // 2
     flow = np.pad(flow, ((0, 0), (p, p), (p, p)))
+    mag = np.pad(mag, ((0, 0), (p, p), (p, p)))
 
     # neighbors of each tangent vector in each window
     flow_neighbors = find_neighbors(flow, ksize,
@@ -66,8 +67,7 @@ def refine_flow(flow, mag, ksize):
     wd = np.abs(dots)
 
     # compute wm
-    mag_padded = np.pad(mag, ((0, 0), (p, p), (p, p)))
-    mag_neighbors = find_neighbors(mag_padded, ksize,
+    mag_neighbors = find_neighbors(mag, ksize,
             s=1, out_h=h, out_w=w)
     mag_me = mag_neighbors[:, :, :, ksize // 2, ksize // 2]
     mag_me = np.expand_dims(mag_me, axis=(3, 4))
@@ -87,8 +87,8 @@ def refine_flow(flow, mag, ksize):
 
     # normalize flow
     norm = np.sqrt(np.sum(flow ** 2, axis=0))
-    none_zero_mask = norm != 0
-    flow[:, none_zero_mask] /= norm[none_zero_mask]
+    mask = norm != 0
+    flow[:, mask] /= norm[mask]
 
     return flow
 
@@ -111,8 +111,12 @@ def make_gauss_filter(sigma, threshold=0.001):
         sigma).astype('float32')
 
 
-def detect_edge(img, flow, sigma_m, sigma_c, rho,
-    thresh, tau):
+def shrink_array(a, center, width):
+    return a[-width + center: width + 1 + center]
+
+
+def detect_edge(img, flow, thresh, sigma_c, rho,
+    sigma_m, tau):
     h, w = img.shape
     # normalize input image
     img = img / 255.0
@@ -122,22 +126,21 @@ def detect_edge(img, flow, sigma_m, sigma_c, rho,
             threshold=thresh)
 
     # resize filter
-    cwidth, swidth = len(gauss_c) // 2, len(gauss_s) // 2
-    dog_width = min(cwidth, swidth)
-    gauss_c = gauss_c[-dog_width + cwidth: dog_width + 1 + cwidth]
-    gauss_s = gauss_s[-dog_width + swidth: dog_width + 1 + swidth]
+    w_gauss_c, w_gauss_s = len(gauss_c) // 2, len(gauss_s) // 2
+    w_fdog = min(w_gauss_c, w_gauss_s)
+    gauss_c = shrink_array(gauss_c, w_gauss_c, w_fdog)
+    gauss_s = shrink_array(gauss_s, w_gauss_s, w_fdog)
 
     # do padding
     img = np.pad(img,
-        ((dog_width, dog_width), (dog_width, dog_width)))
+        ((w_fdog, w_fdog), (w_fdog, w_fdog)))
 
-    # start coords of each pixel (shifted by dog_width)
+    # start coords of each pixel (shifted by width of filter)
     sx, sy = np.meshgrid(np.arange(w), np.arange(h))
-    sx = np.expand_dims(sx, axis=0)
-    sy = np.expand_dims(sy, axis=0)
-    start = np.concatenate((sx, sy), axis=0) + dog_width
+    start = np.concatenate((sx[np.newaxis, ...],
+        sy[np.newaxis, ...]), axis=0) + w_fdog
 
-    steps = np.arange(-dog_width, dog_width + 1).reshape(-1, 1, 1, 1)
+    steps = np.arange(-w_fdog, w_fdog + 1).reshape(-1, 1, 1, 1)
     steps = np.repeat(steps, repeats=2, axis=1)
 
     grad = np.empty_like(flow)
@@ -148,43 +151,43 @@ def detect_edge(img, flow, sigma_m, sigma_c, rho,
     xy = start + (steps * grad)
     ixy = np.round(xy).astype('int32')
     ix, iy = np.split(ixy, indices_or_sections=2, axis=1)
-    ix = ix.reshape(2 * dog_width + 1, h, w)
-    iy = iy.reshape(2 * dog_width + 1, h, w)
+    ix = ix.reshape(2 * w_fdog + 1, h, w)
+    iy = iy.reshape(2 * w_fdog + 1, h, w)
 
     # neighbors of each pixel along the gradient
     neighbors = img[iy, ix]
 
     # apply dog filter in gradient's direction
-    gauss_c = gauss_c.reshape(2 * dog_width + 1, 1, 1)
+    gauss_c = gauss_c.reshape(2 * w_fdog + 1, 1, 1)
     img_gauss_c = np.sum(gauss_c * neighbors, axis=0) \
                 / np.sum(gauss_c)
 
-    gauss_s = gauss_s.reshape(2 * dog_width + 1, 1, 1)
+    gauss_s = gauss_s.reshape(2 * w_fdog + 1, 1, 1)
     img_gauss_s = np.sum(gauss_s * neighbors, axis=0) \
                 / np.sum(gauss_s)
-    img_dog = img_gauss_c - rho * img_gauss_s
+    img_fdog = img_gauss_c - rho * img_gauss_s
 
     zero_grad_mask = np.logical_and(
                     grad[0, ...] == 0, grad[1, ...] == 0)
-    img_dog[zero_grad_mask] = np.max(img_dog)
+    img_fdog[zero_grad_mask] = np.max(img_fdog)
 
     gauss_m = make_gauss_filter(sigma_m)
-    gauss_width = len(gauss_m) // 2
-    
-    # initialize with a negative weight for coding's convenience
-    img_fdog = -gauss_m[gauss_width] * img_dog
-    weight_acc = np.full_like(img_dog, fill_value=-gauss_m[gauss_width])
+    w_gauss_m = len(gauss_m) // 2
 
-    img_dog = np.pad(img_dog,
-        ((gauss_width, gauss_width), (gauss_width, gauss_width)))
+    # initialize with a negative weight for coding's convenience
+    edge = -gauss_m[w_gauss_m] * img_fdog
+    weight_acc = np.full_like(img_fdog, fill_value=-gauss_m[w_gauss_m])
+
+    img_fdog = np.pad(img_fdog,
+        ((w_gauss_m, w_gauss_m), (w_gauss_m, w_gauss_m)))
     zero_grad_mask = np.pad(zero_grad_mask,
-        ((gauss_width, gauss_width), (gauss_width, gauss_width)))
+        ((w_gauss_m, w_gauss_m), (w_gauss_m, w_gauss_m)))
     flow = np.pad(flow, ((0, 0),
-        (gauss_width, gauss_width), (gauss_width, gauss_width)))
+        (w_gauss_m, w_gauss_m), (w_gauss_m, w_gauss_m)))
 
     # smooth neighbors alone tangent
     sx, sy = np.meshgrid(np.arange(w), np.arange(h))
-    sx += gauss_width; sy += gauss_width
+    sx += w_gauss_m; sy += w_gauss_m
 
     forward_mask = np.full(shape=(h, w), fill_value=True,
                 dtype='bool')
@@ -193,12 +196,12 @@ def detect_edge(img, flow, sigma_m, sigma_c, rho,
     y = sy.astype('float32')
     ix, iy = np.round(x).astype('int32'), \
             np.round(y).astype('int32')
-    for i in range(gauss_width + 1):
-        neighbor = img_dog[iy, ix]
+    for i in range(w_gauss_m + 1):
+        neighbor = img_fdog[iy, ix]
 
         # multiply weight
-        weight = gauss_m[gauss_width + i]
-        img_fdog[forward_mask] += (neighbor * weight)[forward_mask]
+        weight = gauss_m[w_gauss_m + i]
+        edge[forward_mask] += (neighbor * weight)[forward_mask]
         weight_acc[forward_mask] += weight
 
         # take a step
@@ -208,9 +211,10 @@ def detect_edge(img, flow, sigma_m, sigma_c, rho,
         ix, iy = np.round(x).astype('int32'), \
             np.round(y).astype('int32')
 
-        none_zero_mask = np.logical_not(zero_grad_mask[iy, ix])
-        forward_mask = np.logical_and(forward_mask, none_zero_mask)
-
+        none_zero_mask = np.logical_not(
+                        zero_grad_mask[iy, ix])
+        forward_mask = np.logical_and(
+                        forward_mask, none_zero_mask)
 
     forward_mask = np.full(shape=(h, w), fill_value=True,
                 dtype='bool')
@@ -218,12 +222,12 @@ def detect_edge(img, flow, sigma_m, sigma_c, rho,
     y = sy.astype('float32')
     ix, iy = np.round(x).astype('int32'), \
             np.round(y).astype('int32')
-    for i in range(gauss_width + 1):
-        neighbor = img_dog[iy, ix]
+    for i in range(w_gauss_m + 1):
+        neighbor = img_fdog[iy, ix]
 
         # multiply weight
-        weight = gauss_m[gauss_width - i]
-        img_fdog[forward_mask] += (neighbor * weight)[forward_mask]
+        weight = gauss_m[w_gauss_m - i]
+        edge[forward_mask] += (neighbor * weight)[forward_mask]
         weight_acc[forward_mask] += weight
 
         # take a step
@@ -233,22 +237,22 @@ def detect_edge(img, flow, sigma_m, sigma_c, rho,
         ix, iy = np.round(x).astype('int32'), \
             np.round(y).astype('int32')
 
-        none_zero_mask = np.logical_not(zero_grad_mask[iy, ix])
-        forward_mask = np.logical_and(forward_mask, none_zero_mask)
+        none_zero_mask = np.logical_not(
+                        zero_grad_mask[iy, ix])
+        forward_mask = np.logical_and(
+                    forward_mask, none_zero_mask)
 
     # postprocess
-    img_fdog /= weight_acc
-    img_fdog[img_fdog > 0] = 1
-    img_fdog[img_fdog <= 0] = 1 + np.tanh(img_fdog[img_fdog <= 0])
-    img_fdog = (img_fdog - np.min(img_fdog)) / \
-               (np.max(img_fdog) - np.min(img_fdog))
+    edge /= weight_acc
+    edge[edge > 0] = 1
+    edge[edge <= 0] = 1 + np.tanh(edge[edge <= 0])
+    edge = (edge - np.min(edge)) / \
+               (np.max(edge) - np.min(edge))
 
     # binarize
-    # mask = np.logical_and(img_fdog < 0, (1 + np.tanh(img_fdog)) < tau)
-    img_fdog[img_fdog < tau] = 0
-    img_fdog[img_fdog >= tau] = 255
-    edge = img_fdog.astype('uint8')
-    return edge
+    edge[edge < tau] = 0
+    edge[edge >= tau] = 255
+    return edge.astype('uint8')
 
 
 def initialze_flow(img, sobel_size):
@@ -259,13 +263,12 @@ def initialze_flow(img, sobel_size):
             ksize=sobel_size)
     grad_y = cv.Sobel(img, cv.CV_32FC1, 0, 1,
             ksize=sobel_size)
-    # <=> mag = cv.magnitude(grad_x, grad_y)
     mag = np.sqrt(grad_x ** 2 + grad_y ** 2)
 
     # normalize gradient and get tangent vector
-    none_zero_mask = mag != 0
-    grad_x[none_zero_mask] /= mag[none_zero_mask]
-    grad_y[none_zero_mask] /= mag[none_zero_mask]
+    mask = mag != 0
+    grad_x[mask] /= mag[mask]
+    grad_y[mask] /= mag[mask]
 
     # normalize magnitude
     mag = cv.normalize(mag, dst=None, alpha=0.0, beta=1.0,
@@ -275,49 +278,59 @@ def initialze_flow(img, sobel_size):
     flow_x, flow_y = -grad_y, grad_x
 
     # expand dimension in axis=0 for vectorizing
-    flow_x = np.expand_dims(flow_x, axis=0)
-    flow_y = np.expand_dims(flow_y, axis=0)
-    flow = np.concatenate((flow_x, flow_y), axis=0)
-    mag = np.expand_dims(mag, axis=0)
+    flow = np.concatenate((flow_x[np.newaxis, ...],
+        flow_y[np.newaxis, ...]), axis=0)
+    mag = mag[np.newaxis, ...]
 
     return flow, mag
 
 
-def run(img, sobel_size=3, etf_iter=2, etf_size=9,
-    fdog_iter=3, sigma_m=3.0, sigma_c=1.0, rho=0.99,
-    thresh=0.001, tau=0.2):
+def run(img, sobel_size=5, etf_iter=4, etf_size=7,
+    fdog_iter=3, thresh=0.001, sigma_c=1.0, rho=0.997,
+    sigma_m=3.0, tau=0.907):
     """
     Running coherent line drawing on input image.
 
     Parameters:
-    -----------
-    - img: ndarray
-        input image, with shape (h, w, c)
-    - sobel_size: int, default=3
-        size of sobel filter
-    - etf_iter: int, default=2
-        iteration times of refining edge tangent flow
-    - etf_size: int, default=9
-        size of etf filter
-    - fdog_iter: int, default=3
-        iteration times of applying fdog on input image
-    - sigma_m: float, default=3.0
-        standard variance of gaussian filter
-    - sigma_c: float, default=1.0
-        standard variance of one gaussian filter of dog filter,
-        another's standard variance will be set to 1.6 * sigma_c
-    - rho: float, default=0.99
-        dog = first gaussian - rho * second gaussian
-    - thresh: float, default=0.001
-        TODO: 
-    - tau: float, default=0.2
-        threshold of edge map
+    ----------
+    - img : ndarray
+        Input image, with shape = (h, w, c).
+    
+    - sobel_size : int, default = 5
+        Size of sobel filter, sobel filter will be used to compute
+        gradient.
+    
+    - etf_iter : int, default = 4
+        Iteration times of refining edge tangent flow.
+    
+    - etf_size : int, default = 7
+        Size of etf filter.
+    
+    - fdog_iter : int, default = 3
+        Iteration times of applying fdog on input image.
+    
+    - thresh : float, default = 0.001
+        Threshold of guass filter's value, this is not an important
+        parameter.
+    
+    - sigma_c : float, default = 1.0
+        Standard variance of one gaussian filter of dog filter,
+        another's standard variance will be set to 1.6 * sigma_c.
+    
+    - rho : float, default = 0.997
+        Dog = gauss_c - rho * gauss_s.
+    
+    - sigma_m : float, default = 3.0
+        Standard variance of gaussian filter.
+    
+    - tau : float, default=0.907
+        Threshold of edge map.
 
     Returns:
-    --------
-    - edge: ndarray
-        edge map of input image, data type is float32 and pixel's
-        range is clipped to [0, 255]
+    -------
+    - edge : ndarray
+        Edge map of input image, data type is float32 and pixel's
+        range is clipped to [0, 255].
     """
     # convert to gray image
     img = cv.cvtColor(img, cv.COLOR_RGB2GRAY)
@@ -336,44 +349,29 @@ def run(img, sobel_size=3, etf_iter=2, etf_size=9,
     # do fdog
     for i in range(fdog_iter):
         start = time.perf_counter()
-        edge = detect_edge(img, flow, sigma_m=sigma_m,
-            sigma_c=sigma_c, rho=rho, thresh=thresh, tau=tau)
+        edge = detect_edge(img, flow, thresh=thresh,
+            sigma_c=sigma_c, rho=rho, sigma_m=sigma_m, tau=tau)
         img[edge == 0] = 0
         img = cv.GaussianBlur(img, ksize=(3, 3), sigmaX=0, sigmaY=0)
         end = time.perf_counter()
         print(f"applying fdog, iteration {i + 1}, "
                 f"time cost = {end - start:<6f}s")
 
-    return detect_edge(img, flow, sigma_m=sigma_m,
-        sigma_c=sigma_c, rho=rho, thresh=thresh, tau=tau)
+    return detect_edge(img, flow, thresh=thresh,
+        sigma_c=sigma_c, rho=rho, sigma_m=sigma_m, tau=tau)
 
 
 if __name__ == "__main__":
-    # test2.jpg is noisy and need specific configuration:
-    # img=img
-    # sobel_size=5
-    # etf_iter=2
-    # etf_size=7
-    # fdog_iter=5
-    # gauss_size=13
-    # sigma_m=3.0
-    # dog_size=7
-    # sigma_c=1.0
-    # rho=0.98
-    # tau=0.803
-
     tests = [
-        # 'test2.jpg'
-        'test1.jpg', 'test3.jpg',
         'eagle.jpg', 'butterfly.jpg', 'lighthouse.png',
         'star.jpg', 'girl.jpg'
     ]
 
     for test in tests:
         print(f"running on test {test}")
-        # read image by opencv
+        # read image
         img = cv.imread(os.path.join('benchmarks', test))
-
+        
         # shrink image if its size is considerable (500?)
         shape = img.shape[:-1][::-1]
         if any(map(lambda sz: sz > 500, shape)):
@@ -383,21 +381,16 @@ if __name__ == "__main__":
 
         # run on this image and return edge map
         edge = run(
-            img=img,
-            sobel_size=5,
-            etf_iter=4,
-            etf_size=7,
-            fdog_iter=2,
-            sigma_m=3.0,
-            sigma_c=1.0,
-            rho=0.997,
+            img=img, sobel_size=5,
+            etf_iter=4, etf_size=7,
+            fdog_iter=2, sigma_c=1.0, rho=0.997, sigma_m=3.0,
             tau=0.907
         )
         print("{}-{}".format('- ' * 10, ' -' * 9))
 
         # show origin image and edge map
         cv_imshow(img, title="input", wait=0.1)
-        cv_imshow(edge.astype('uint8'), title="output", wait=0,
+        cv_imshow(edge.astype('uint8'), title="output", wait=0.5,
             move=(int(img.shape[1] * 1.5), 0))
 
         # save result
