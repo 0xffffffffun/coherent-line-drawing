@@ -53,8 +53,8 @@ def refine_flow(flow, mag, ksize):
             s=1, out_h=h, out_w=w)
 
     # centural tangent vector in each window
-    flow_me = flow_neighbors[:, :, :, ksize // 2, ksize // 2]
-    flow_me = np.expand_dims(flow_me, axis=(3, 4))
+    flow_me = flow_neighbors[..., ksize // 2, ksize // 2]
+    flow_me = flow_me[..., np.newaxis, np.newaxis]
 
     # compute dot
     dots = np.sum(flow_neighbors * flow_me, axis=2,
@@ -69,15 +69,15 @@ def refine_flow(flow, mag, ksize):
     # compute wm
     mag_neighbors = find_neighbors(mag, ksize,
             s=1, out_h=h, out_w=w)
-    mag_me = mag_neighbors[:, :, :, ksize // 2, ksize // 2]
-    mag_me = np.expand_dims(mag_me, axis=(3, 4))
+    mag_me = mag_neighbors[..., ksize // 2, ksize // 2]
+    mag_me = mag_me[..., np.newaxis, np.newaxis]
     wm = (1 + np.tanh(mag_neighbors - mag_me)) / 2
 
     # compute ws
     ws = np.ones_like(wm)
     x, y = np.meshgrid(np.arange(ksize), np.arange(ksize))
     cx, cy = ksize // 2, ksize // 2
-    dist = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)[None, :, :]
+    dist = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)[np.newaxis, ...]
     ws[:, :, dist >= ksize // 2] = 0
 
     # update flow
@@ -144,8 +144,8 @@ def detect_edge(img, flow, thresh, sigma_c, rho,
     steps = np.repeat(steps, repeats=2, axis=1)
 
     grad = np.empty_like(flow)
-    grad[0, :, :] = flow[1, :, :]
-    grad[1, :, :] = -flow[0, :, :]
+    grad[0, ...] = flow[1, ...]
+    grad[1, ...] = -flow[0, ...]
 
     # take steps along the gradient
     xy = start + (steps * grad)
