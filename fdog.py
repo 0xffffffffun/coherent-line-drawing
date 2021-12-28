@@ -9,12 +9,12 @@ import os
 numpy and opencv, all operations are vectorized (but not so well =v=).
 Performance is better than any other re-implementation of Python in github
 but slower than re-implementation of C++.
-    The result is bad in comparison with paper's result. But I think most
-of my implementation is correct.
 
     Author: linxinqi@tju.edu.cn
     Date:   2021-12-18 03:55
     << Do whatever you want with this code >>
+
+    reference: https://github.com/SSARCandy/Coherent-Line-Drawing
 """
 
 
