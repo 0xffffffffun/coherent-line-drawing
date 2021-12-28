@@ -397,8 +397,8 @@ def run(img, sobel_size=5, etf_iter=4, etf_size=7,
 
 if __name__ == "__main__":
     tests = [
-        'eagle.jpg', 'butterfly.jpg', 'lighthouse.png',
-        'star.jpg', 'girl.jpg'
+        'eagle.jpg', 'butterfly.jpg',
+        'lighthouse.png', 'star.jpg',
     ]
 
     for test in tests:
